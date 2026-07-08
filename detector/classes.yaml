@@ -1,0 +1,21 @@
+# Class taxonomy for the region detector.
+#
+# GENERIC structural element types, not specific part names -- the
+# detector's job is "find and crop this kind of region", not "identify
+# which component this is". Identification/matching happens afterward by
+# reading the content inside each crop (core/region_extractor.py) and
+# matching by that content -- so the detector needs to generalize across
+# drawings that do and don't draw an explicit box around a given element,
+# because it's learning the visual pattern of each type, not "is there a
+# rectangle here".
+
+names:
+  0: component_outline        # flat-pattern / part silhouette line drawing
+  1: bom_table                # the FN/QTY/material parts table
+  2: seam_or_spec_table       # seam table, lock-type table, other structured tables
+  3: dimension_callout        # a dimension value + its leader/extension lines
+  4: balloon_ref              # a circled reference number
+  5: handwritten_markup       # red pen revision notes / strike-throughs
+  6: section_or_view_label    # boxed "VIEW No. X" / "CONSTRUCTION SECTION" labels
+  7: title_block               # the standard corner info block
+  8: note_or_text_block         # free-standing printed notes / numbered spec notes

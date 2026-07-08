@@ -1,0 +1,18 @@
+# detector/data.yaml — YOLO dataset descriptor for Ultralytics training.
+# Point this at wherever your X-AnyLabeling YOLO export + train/val split
+# landed (see detector/README.md step 3).
+
+path: ./dataset
+train: images/train
+val: images/val
+
+names:
+  0: component_outline
+  1: bom_table
+  2: seam_or_spec_table
+  3: dimension_callout
+  4: balloon_ref
+  5: handwritten_markup
+  6: section_or_view_label
+  7: title_block
+  8: note_or_text_block
