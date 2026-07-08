@@ -26,13 +26,14 @@ def _strip_fences(raw: str) -> str:
 
 
 def chat_json(prompt: str, image_paths: list = None, model: str = None,
-              temperature: float = 0.0, timeout: int = 180) -> dict:
+              temperature: float = 0.0, timeout: int = 600) -> dict:
     """
     Sends a prompt (optionally with images) to a local Ollama model and
     parses the response as JSON. Raises ValueError if the model didn't
     return clean JSON -- surface that to the user rather than guessing.
     """
     model = model or config.OLLAMA_TEXT_MODEL
+    
     message = {"role": "user", "content": prompt}
     if image_paths:
         message["images"] = [_b64(p) for p in image_paths]
@@ -41,12 +42,24 @@ def chat_json(prompt: str, image_paths: list = None, model: str = None,
         "model": model,
         "messages": [message],
         "stream": False,
-        "options": {"temperature": temperature},
+        "options": {
+            "temperature": temperature,
+            "num_ctx": 16384,
+            "num_predict": 4096
+        },
     }
+    
     resp = requests.post(f"{config.OLLAMA_HOST}/api/chat", json=payload, timeout=timeout)
+    
+    # --- CRITICAL FIX: Force the exact error to show in Streamlit ---
+    if resp.status_code != 200:
+        raise RuntimeError(f"OLLAMA REJECTED REQUEST: {resp.text}")
+    # ----------------------------------------------------------------
+        
     resp.raise_for_status()
     raw = resp.json()["message"]["content"]
     cleaned = _strip_fences(raw)
+    
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError as e:

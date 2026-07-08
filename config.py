@@ -31,7 +31,7 @@ OLLAMA_TEXT_MODEL = "qwen2.5:7b"        # used for purpose reconciliation
 # --- Rendering ---------------------------------------------------------
 # 300+ recommended -- these drawings use thin, low-contrast CAD line-weight
 # fonts that need real resolution to read reliably at all.
-RENDER_DPI = 300
+RENDER_DPI = 100
 
 # --- Rule-based reconciler sensitivity (only used if RECONCILE_BACKEND == "rules")
 RULES_MATCH_THRESHOLD = 0.28
@@ -39,7 +39,7 @@ RULES_MATCH_THRESHOLD = 0.28
 # --- Tesseract path (only needed if EXTRACTION_BACKEND == "ocr", or if
 # REGION_READ_BACKEND == "ocr")
 # e.g. r"C:\Program Files\Tesseract-OCR\tesseract.exe" on Windows
-TESSERACT_CMD = None
+TESSERACT_CMD = r"C:/Program Files/Tesseract-OCR/tesseract.exe"
 
 # --- Region detector settings (only used if EXTRACTION_BACKEND == "region_detector")
 DETECTOR_WEIGHTS = "detector/runs/drawing_regions/weights/best.pt"

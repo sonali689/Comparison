@@ -33,15 +33,15 @@ change was actually found that accomplishes it.
 
 Return ONLY valid JSON in this schema:
 
-{
+{{
   "purpose_verdicts": [
-    {"purpose": "...", "verdict": "met|partially_met|not_met",
-     "evidence": ["..."], "explanation": "..."}
+    {{"purpose": "...", "verdict": "met|partially_met|not_met",
+     "evidence": ["..."], "explanation": "..."}}
   ],
   "unexpected_changes": [
-    {"description": "...", "risk_note": "..."}
+    {{"description": "...", "risk_note": "..."}}
   ]
-}
+}}
 
 PURPOSE:
 {purpose_list}
