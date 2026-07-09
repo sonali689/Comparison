@@ -86,7 +86,6 @@ def _line_positions(projection: np.ndarray, thresh_frac: float = 0.3) -> list:
         positions.append((start + len(projection)) // 2)
     return positions
 
-
 def _merge_close(positions: list, min_gap: int) -> list:
     if not positions:
         return []
