@@ -1,222 +1,182 @@
 # Drawing Revision Auditor
 
-A local tool for auditing engineering drawing revisions. Compare two PDF revisions of the same drawing, provide the stated revision purpose, and get a report showing whether each stated purpose was met plus every detected BOM / annotation change.
+Upload the old and new revision of an engineering drawing, state the
+purpose of the revision (the ECO / handwritten notes), and get back:
+- a verdict per purpose item (met / partially met / not met, with evidence)
+- a list of unexpected changes that don't map to any stated purpose
+- a full table of every BOM/FN field change
+- a full table of every other annotation/dimension/text change
 
-This repo is designed to work entirely locally, with no cloud API calls. It supports multiple extraction and reconciliation approaches and includes a region-detector workflow for a stronger long-term extraction pipeline.
+**Fully local. No cloud API calls anywhere.**
 
-## Key features
+## Design principle
+Never compare positions. BOM rows are keyed by FN number; everything
+else is matched by content (a balloon number, or fuzzy text similarity
+for unlabelled notes/dimensions). A component that moved to a different
+spot on a redrawn sheet is still the same key/content, so it's still
+matched correctly.
 
-- Compare two revisions of the same drawing and detect changes in:
-  - BOM rows / FN table
-  - annotations, dimensions, notes, handwritten changes
-- Reconcile changes against the stated purpose of the revision
-- Support for multiple extraction backends:
-  - `ollama` vision model extraction
-  - `ocr` fallback using Tesseract + OpenCV + calibration
-  - `region_detector` using a trained YOLO region detector
-- Support for multiple purpose reconciliation backends:
-  - `ollama` semantic reconciliation
-  - `rules` keyword/fuzzy matching fallback
-- One-time calibration helper for stable BOM grid extraction on OCR backend
-- Simple Streamlit UI plus CLI smoke test for quick runs
+## This was tested against a real drawing, not just written and shipped
+During development this was run against an actual Autoliv drawing
+(X670001400A, revisions 00-63/00-65/00-67), and the results changed the
+design more than once:
 
-## Repository layout
+1. **No PDF text layer.** `pdfplumber.extract_text()` returned nothing on
+   any of 8 real pages checked — these are fully rasterised, so OCR/vision
+   reading isn't optional, there's no selectable-text shortcut available.
+2. **Global OCR thresholding (OTSU) failed completely** on the BOM table
+   header, even at high DPI with upscaling — these drawings render with
+   very low-contrast, thin CAD-weight fonts. Isolating each table **cell**
+   individually and using **adaptive thresholding** instead fixed it —
+   confirmed by reading the header correctly (`FN`, `QTY`, `STANDARD
+   TITLE`...) once cropped tightly.
+3. **Auto-detecting the table grid from scratch was unreliable** — a page
+   can have more than one grid-like region with different row pitches,
+   and "pick the longest consistent run" picked the wrong one. Since
+   you're always comparing revisions of the *same* drawing template, the
+   fix was to calibrate the grid geometry once per drawing number
+   (`core/calibration.py`, `calibrate.py`) and reuse it — not re-detect
+   it every run.
+4. **Red strike-through marks corrupt the FN digits themselves**, not
+   just the row text — several different struck rows OCR'd to the same
+   garbled text, which was silently overwriting each other in a
+   dictionary keyed by that text. Fixed by falling back to a
+   `unread_row_p{page}_r{idx}` key (instead of the unreliable OCR guess)
+   whenever the FN can't be confidently parsed, and flagging those rows
+   `fn_confidence: "low"` end-to-end so the report calls them out for
+   manual review instead of silently guessing.
+5. Clean, unstruck rows (FN 10, 21, 51, 200, 201, 800, 801, 24, 53, 54)
+   read correctly with this approach. Struck-through rows are still the
+   hardest case and are honestly flagged, not silently trusted.
 
-- `app.py` — Streamlit front-end for file upload, purpose entry, and audit report
-- `pipeline.py` — end-to-end orchestration of rendering, extraction, diffing, and reconciliation
-- `config.py` — global backend selection and settings
-- `calibrate.py` — one-time helper to produce calibration debug overlays
-- `requirements.txt` — runtime dependencies
-- `core/`
-  - `vision_extractor.py` — Ollama-based page extraction
-  - `ocr_extractor.py` — Tesseract/OpenCV BOM and annotation extraction
-  - `region_extractor.py` — region detector + crop reading extraction
-  - `structured_diff.py` — diff engine for BOM rows and annotations
-  - `reconciler.py` — purpose reconciliation logic
-  - `ollama_client.py` — local Ollama request wrapper
-  - `pdf_utils.py` — PDF page rendering and text-layer helpers
-  - `calibration.py` — calibration loading/saving and overlay helpers
-  - `region_detector.py` — YOLO detector inference wrapper
-- `calibrations/` — saved BOM grid calibration data for OCR backend
-- `detector/` — dataset preparation, training, and evaluation scripts for region detector backend
-- `tests/` — sample CLI smoke test
+A working calibration for X670001400A, from that actual test, ships in
+`calibrations/X670001400A.json`.
 
-## How it works
+## Visual highlighting — what it does, tested against real data
+Every change now carries the pixel region it happened in through the
+whole pipeline, and `core/report_renderer.py` draws a highlight box on
+the actual page (plus a padded close-up crop) for each one — shown
+inline in the Streamlit app. This works across however many pages a PDF
+has; each change is tagged with its own page number, so a multi-page,
+multi-drawing PDF highlights the right page for each item, not just page 1.
 
-### Pipeline overview
+Two bugs fixed on the way to this (found from an earlier bad run, not
+hypothetical): raw internal join-keys (`dimension:21`) were leaking into
+the UI instead of being translated into readable descriptions — fixed in
+`report_renderer._describe`. And the `ollama` backend's output wasn't
+validated at all, so a misread material code or the drawing number could
+end up masquerading as a real FN-keyed component — fixed with `_valid_fn`
+in `vision_extractor.py`, which now rejects anything that isn't a
+genuine 1-3 digit FN before it's ever added to `bom_rows`.
 
-`pipeline.py` does the following:
+**Re-tested end to end against the real 00-63 → 00-65 pair after those
+fixes**, using the `ocr` backend: the highlighting pipeline itself works
+correctly (crops generated, correctly located, for every change). But
+the diff also surfaced a lot of false positives — rows that should be
+identical between these two revisions showing as "changed" because OCR
+read the same printed text slightly differently on the two separate
+runs (`'6231960 14A'` vs `'6231 960 14A'`, `'6050183 OIA'` vs `'6050183
+O1A.'`). Whitespace was normalized away as a safe first pass, but the
+dominant noise is character-level misreads (O/0 confusion, stray
+punctuation), which weren't touched on purpose — silently "cleaning"
+those risks masking a genuine material-code change, which is exactly
+what this tool is supposed to catch.
 
-1. Render both PDF revisions to images with `core/pdf_utils.py`
-2. Extract structured content from each page using the configured backend
-3. Diff the old and new extractions with `core/structured_diff.py`
-4. Reconcile detected changes against the stated purpose using `core/reconciler.py`
+**Practical takeaway: the `ocr` backend's false-positive rate on this
+scan quality is high enough that its raw diff output needs a human
+skim, not blind trust.** The `ollama` backend should handle this
+failure mode fundamentally better, since it reads content semantically
+rather than character-by-character — but that hasn't been confirmed
+against real data yet (no Ollama instance was available in the sandbox
+used to build this). Test `ollama` against the same 00-63/00-65 pair
+before deciding which backend to rely on.
 
-### Extraction backends
+## Three extraction backends
+Set in `config.py` (`EXTRACTION_BACKEND`):
 
-#### 1. `ollama`
+| Backend | How it reads a page | Needs setup? |
+|---|---|---|
+| `ollama` | Local vision LLM reads the whole page contextually | Install Ollama, pull a model |
+| `ocr` | Tesseract + calibrated grid detection, per-cell adaptive threshold | Tesseract install; calibrate new drawing templates once (`calibrate.py`) |
+| `region_detector` | Trained YOLO model crops regions first, each read separately | Needs a labeled dataset + training run — `detector/README.md` |
 
-- Uses a local Ollama multimodal vision model via `core/vision_extractor.py`
-- Reads full pages and extracts BOM rows plus annotations as JSON
-- Recommended when Ollama is available because it handles handwriting, red ink, and thin CAD fonts better than OCR
-- Requires `ollama serve` running and the chosen models pulled locally
+`ollama` is the least fiddly if you have it running — it doesn't need
+per-drawing-template calibration the way `ocr` does, since it reads
+contextually rather than via a fixed pixel grid.
 
-#### 2. `ocr`
-
-- Uses Tesseract + OpenCV in `core/ocr_extractor.py`
-- Locates the BOM table by grid lines and reads each cell individually with adaptive thresholding
-- Uses calibration for stable BOM extraction across revisions of the same drawing template
-- No LLM required
-
-#### 3. `region_detector`
-
-- Uses a trained YOLO region detector in `core/region_extractor.py`
-- Detects regions like BOM tables, balloons, dimensions, and handwritten markup
-- Reads the text inside each crop using either Tesseract or Ollama (`REGION_READ_BACKEND`)
-- Most accurate long-term once a labeled dataset and model are available
-
-### Reconciliation backends
-
-#### 1. `ollama`
-
-- Uses a local text LLM via `core/reconciler.py`
-- Performs semantic matching between stated purpose items and detected changes
-- Returns verdicts for each purpose item plus unexpected changes
-
-#### 2. `rules`
-
-- Keyword- and fuzzy-text matching fallback
-- No LLM required
-- Uses token overlap, string similarity, and explicit FN references
+## Repo layout
+```
+config.py                      -- all tunables: backends, models, paths
+pipeline.py                    -- orchestrator, picks backend per config
+app.py                         -- Streamlit UI
+calibrate.py                   -- one-time grid calibration helper for a new drawing template
+calibrations/
+  X670001400A.json              -- real, tested calibration for this drawing
+core/
+  pdf_utils.py                  -- render PDF pages to PNG; text-layer check
+  ollama_client.py                -- thin local Ollama HTTP wrapper
+  vision_extractor.py               -- "ollama" backend
+  ocr_extractor.py                    -- "ocr" backend (calibrated grid + per-cell OCR)
+  calibration.py                        -- load/save/visualize per-drawing grid calibration
+  region_detector.py                      -- "region_detector" backend: YOLO inference
+  region_extractor.py                       -- "region_detector" backend: reads each crop
+  structured_diff.py                          -- ID-keyed diff, shared by all backends
+  reconciler.py                                 -- purpose-vs-changes check (ollama or rules)
+detector/                        -- training subproject for region_detector
+  classes.yaml                    -- the 9-class taxonomy
+  README.md                        -- labeling (X-AnyLabeling) + training guide
+  prepare_dataset.py                 -- PDFs -> page images for labeling
+  data.yaml                            -- YOLO dataset config
+  train.py                               -- fine-tune YOLOv8
+  evaluate.py                              -- per-class mAP + prediction overlays
+tests/
+  sample_purpose_check.py         -- CLI smoke test, no Streamlit needed
+```
 
 ## Setup
-
-1. Create and activate a Python environment.
-2. Install requirements:
-
-```bash
+```
 pip install -r requirements.txt
 ```
+- **`ollama` backend**: install [Ollama](https://ollama.com), run `ollama serve`,
+  pull the models named in `config.py`.
+- **`ocr` backend**: install Tesseract, set `config.TESSERACT_CMD` if not
+  on PATH. For a NEW drawing template (not X670001400A), run
+  `python calibrate.py some_revision.pdf --page 1` first and follow its
+  instructions to save a calibration file.
+- **`region_detector` backend**: follow `detector/README.md` end to end first.
 
-3. If using the `ocr` backend on Windows, install Tesseract and set `config.TESSERACT_CMD` to the executable path.
-4. If using `ollama`, install and run Ollama locally, and pull the required models:
+No API key needed anywhere.
 
-```bash
-ollama serve
-ollama pull qwen2.5vl:7b
-ollama pull qwen2.5:7b
+## Running it
 ```
-
-5. Configure `config.py`:
-- `EXTRACTION_BACKEND` = `ollama`, `ocr`, or `region_detector`
-- `RECONCILE_BACKEND` = `ollama` or `rules`
-- `OLLAMA_HOST`, `OLLAMA_VISION_MODEL`, `OLLAMA_TEXT_MODEL`
-- `TESSERACT_CMD` if using OCR
-- `DETECTOR_WEIGHTS` if using `region_detector`
-
-## Running the app
-
-```bash
 streamlit run app.py
 ```
-
-Upload the previous and new revision PDFs, enter the stated purpose items, and click `Run audit`.
-
-## CLI smoke test
-
-Use the sample purpose-check script to run a quick audit without Streamlit:
-
-```bash
-python tests/sample_purpose_check.py old.pdf new.pdf "Remove FN22" "Change seam table"
-python tests/sample_purpose_check.py old.pdf new.pdf --drawing X670001400A "Remove FN22"
+or:
+```
+python tests/sample_purpose_check.py old_rev.pdf new_rev.pdf --drawing X670001400A "Remove FN22" "Change seam table"
 ```
 
-## Calibration for OCR backend
+## Known gaps — the honest part
+1. **Strike-through detection threshold needs tuning.** In testing it
+   caught some struck rows but missed others — the red-pixel-fraction
+   check (`core/ocr_extractor.py`, `_is_red_region` threshold) is checked
+   against the full row width, which may be too strict when a strike mark
+   only covers part of a row. Worth tuning against more real examples.
+2. **Rows with `fn_confidence: "low"`** (mostly struck-through rows) have
+   unreliable field values beyond the struck/not-struck flag — the
+   report calls these out explicitly; treat them as "check this by eye,"
+   not as a confirmed reading.
+3. **`ocr` backend needs one-time calibration per drawing number.** No
+   calibration on file → falls back to auto-detection, which is
+   meaningfully less reliable (see point 3 in the testing section above).
+4. **`region_detector` is not a drop-in win yet** — needs a real labeled
+   dataset and at least one train/evaluate/correct loop before it should
+   be trusted over `ollama`/`ocr`.
+5. **`ollama` backend is the least tested of the three in this
+   development pass** — no Ollama instance was available in the sandbox
+   used to build this, so its real-world accuracy on these drawings is a
+   prediction based on how badly character-level OCR struggled, not a
+   confirmed result. Test it before relying on it, same as everything else here.
 
-The OCR backend is designed for the same drawing template across revisions. For best accuracy, create a calibration file in `calibrations/<drawing_number>.json`.
-
-1. Run the helper against a clean template page:
-
-```bash
-python calibrate.py path/to/revision.pdf --page 1 --out calibration_debug.png
-```
-
-2. Open `calibration_debug.png`, inspect the candidate row and column lines, and save a JSON file with:
-
-- `row_top` — y-pixel of the first data row
-- `row_pitch` — row height in pixels
-- `num_rows` — number of BOM rows
-- `col_xs` — x-pixel boundaries for table columns
-- `render_dpi` — DPI used for rendering
-
-3. Save it as `calibrations/<drawing_number>.json`.
-
-The OCR extractor scales calibration values automatically when `config.RENDER_DPI` differs from the calibration DPI.
-
-## Region detector workflow
-
-The region detector backend is optional and requires dataset labeling and model training.
-
-### Dataset preparation
-
-```bash
-python detector/prepare_dataset.py --pdf_dir /path/to/pdfs --out_dir detector/dataset/images/all
-```
-
-Label images with a tool like X-AnyLabeling using the classes defined in `detector/classes.yaml`.
-
-### Training
-
-```bash
-python detector/train.py
-```
-
-### Evaluation
-
-```bash
-python detector/evaluate.py --weights runs/drawing_regions/weights/best.pt
-```
-
-### Enabling in the app
-
-Set `config.EXTRACTION_BACKEND = "region_detector"` and update `config.DETECTOR_WEIGHTS`.
-
-## Important notes and limitations
-
-- The OCR backend is fragile on thin CAD-style fonts and handwritten red strike-throughs, which is why calibration and fallback keys exist.
-- `ollama` backends require a local Ollama instance and model downloads.
-- `region_detector` is a stronger long-term solution, but only after collecting and training on a quality labeled dataset.
-- `core/structured_diff.py` matches BOM rows by FN or fallback positional keys, and annotations by kind/ref_id.
-- Unexpected changes are surfaced separately from purpose validation, so review both the audit verdicts and the full diff.
-
-## Suggested README additions
-
-This repo still benefits from more complete coverage in future README updates:
-
-- Example input/output screenshots from the Streamlit app
-- Sample calibration JSON and debug overlay explanation
-- A known-good `requirements-dev.txt` for training/evaluation dependencies
-- More explicit troubleshooting for Ollama connection failures
-- A short note on how to generate a new drawing calibration from scratch
-- Any dataset conventions used for `region_detector` labels and data splits
-
-## Dependencies
-
-- `streamlit`
-- `PyMuPDF`
-- `pdfplumber`
-- `pytesseract`
-- `opencv-python`
-- `numpy`
-- `requests`
-- `ultralytics` (optional, only for `region_detector`)
-
-## Contact
-
-For questions about the pipeline or to extend the tool, inspect:
-- `core/vision_extractor.py`
-- `core/ocr_extractor.py`
-- `core/region_extractor.py`
-- `core/structured_diff.py`
-- `core/reconciler.py`
-
+Test against a revision pair you already know the answer to before
+trusting any backend on one you don't.

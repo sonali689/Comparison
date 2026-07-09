@@ -2,9 +2,9 @@
 app.py — Drawing Revision Auditor
 
 Upload two revisions of the same drawing, state the purpose of the
-revision, get an audit of whether that purpose was actually met, plus
-every other change found. Everything runs locally -- no cloud API calls
-anywhere.
+revision, get an audit of whether that purpose was actually met, every
+other change found, and a highlighted image of WHERE each change is on
+the actual drawing page. Fully local, no cloud API calls anywhere.
 """
 
 import os
@@ -41,8 +41,8 @@ with col2:
     new_file = st.file_uploader("New revision (PDF)", type="pdf", key="new_rev")
 
 drawing_number = st.text_input(
-    "Drawing number (optional, only used by the 'ocr' backend to load a saved "
-    "grid calibration -- see calibrations/)",
+    "Drawing number (optional -- 'ocr' backend uses this to load a saved grid "
+    "calibration; see calibrations/)",
     placeholder="X670001400A",
 )
 
@@ -64,11 +64,15 @@ if st.button("Run audit", type="primary", disabled=not ready):
         with open(new_path, "wb") as f:
             f.write(new_file.read())
 
-        with st.spinner("Reading both drawings and comparing every component..."):
+        with st.spinner("Reading both drawings, comparing every component, and rendering highlights..."):
             result = run_purpose_check(old_path, new_path, purpose_items,
                                         drawing_number=drawing_number.strip() or None)
 
-    report, diff = result["report"], result["diff"]
+    st.session_state["result"] = result
+
+if "result" in st.session_state:
+    result = st.session_state["result"]
+    report, visual_changes = result["report"], result["visual_changes"]
 
     st.subheader("Was the purpose met?")
     for v in report["purpose_verdicts"]:
@@ -85,34 +89,19 @@ if st.button("Run audit", type="primary", disabled=not ready):
     else:
         st.success("None found.")
 
-    st.subheader("All BOM / FN changes")
-    bom_changes = [c for c in diff["bom_changes"] if c.change_type != "unchanged"]
-    if bom_changes:
-        rows = []
-        for c in bom_changes:
-            flag = " ⚠️ low OCR confidence" if c.low_confidence else ""
-            if c.change_type == "modified":
-                for fc in c.changes:
-                    rows.append({"FN": c.key + flag, "Change": c.change_type, "Field": fc.field,
-                                 "Old": fc.old, "New": fc.new})
-            else:
-                rows.append({"FN": c.key + flag, "Change": c.change_type, "Field": "-", "Old": "-", "New": "-"})
-        st.dataframe(rows, use_container_width=True)
-    else:
-        st.info("No BOM/FN table changes detected.")
-
-    st.subheader("All other annotation / dimension / text changes")
-    ann_changes = diff["annotation_changes"]
-    if ann_changes:
-        rows = []
-        for c in ann_changes:
-            if c.change_type == "modified":
-                for fc in c.changes:
-                    rows.append({"Ref": c.key, "Change": c.change_type, "Field": fc.field, "Old": fc.old, "New": fc.new})
-            else:
-                rows.append({"Ref": c.key, "Change": c.change_type, "Field": "text",
-                              "Old": (c.old_value or {}).get("text", "-"),
-                              "New": (c.new_value or {}).get("text", "-")})
-        st.dataframe(rows, use_container_width=True)
-    else:
-        st.info("No annotation/text changes detected.")
+    st.subheader(f"All changes, highlighted on the drawing ({len(visual_changes)} total)")
+    if not visual_changes:
+        st.info("No changes detected.")
+    for i, vc in enumerate(visual_changes):
+        badge = "🔴 LOW CONFIDENCE" if vc["low_confidence"] else ""
+        st.markdown(f"**{i + 1}. {vc['description']}** &nbsp; `{vc['change_type']}` "
+                     f"&nbsp; page {vc['page_no']} ({vc['page_side']}) {badge}")
+        if vc["crop_image"]:
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                st.image(vc["crop_image"], caption="Close-up")
+            with c2:
+                st.image(vc["full_image"], caption="Location on the page")
+        else:
+            st.caption("(No image -- this backend/entry had no location data for this item.)")
+        st.divider()

@@ -86,6 +86,7 @@ def _line_positions(projection: np.ndarray, thresh_frac: float = 0.3) -> list:
         positions.append((start + len(projection)) // 2)
     return positions
 
+
 def _merge_close(positions: list, min_gap: int) -> list:
     if not positions:
         return []
@@ -160,6 +161,14 @@ def _row_bands_auto(mask: np.ndarray):
 
 
 def extract_bom_table(img_bgr: np.ndarray, calibration: dict = None, page_no: int = 1) -> dict:
+    # A calibration is measured against ONE specific page of the drawing
+    # template (e.g. page 1, where the BOM table lives) -- applying it
+    # blindly to every page would crop garbage cells out of pages that
+    # don't have that table at all (component outlines, seam tables,
+    # notes...). Only use it on the page it was actually calibrated for.
+    if calibration and calibration.get("page", 1) != page_no:
+        calibration = None
+
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
     if calibration:
@@ -214,6 +223,7 @@ def extract_bom_table(img_bgr: np.ndarray, calibration: dict = None, page_no: in
             "usage": values.get("usage", ""),
             "struck_through": bool(struck),
             "fn_confidence": fn_confidence,
+            "bbox": (col_xs[0], y0, col_xs[-1], y1),  # pixel-exact -- for highlighting in the report
         }
     return bom_rows
 
@@ -249,7 +259,8 @@ def extract_annotations(img_bgr: np.ndarray) -> list:
             kind = "other"
 
         annotations.append({"ref_id": "none", "kind": kind, "text": text,
-                             "color": "red" if is_red else "black"})
+                             "color": "red" if is_red else "black",
+                             "bbox": (x, y, x + w, y + h)})
     return annotations
 
 

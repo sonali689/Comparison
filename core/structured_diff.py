@@ -63,7 +63,20 @@ def diff_bom(old_rows: dict, new_rows: dict) -> list:
             field_changes = []
             for f in BOM_FIELDS:
                 ov, nv = old.get(f), new.get(f)
-                if str(ov).strip() != str(nv).strip():
+                # Collapse whitespace before comparing -- raw OCR reads of
+                # the exact same printed text can differ by a stray space
+                # ("6231960" vs "6231 960") between two separate runs; that's
+                # OCR noise, not a real revision change. Character-level
+                # misreads (O vs 0, extra punctuation) are NOT normalized
+                # away here on purpose -- silently "fixing" those risks
+                # masking an actual material-code change, which is exactly
+                # the kind of thing this tool exists to catch. If false
+                # positives from that remain common on your drawings, the
+                # `ollama` backend (semantic reading, not character-by-
+                # character OCR) is the more fundamental fix -- see README.
+                ov_norm = " ".join(str(ov).split())
+                nv_norm = " ".join(str(nv).split())
+                if ov_norm != nv_norm:
                     field_changes.append(FieldChange(f, ov, nv))
             if field_changes:
                 changes.append(ComponentChange("bom_row", fn, "modified", field_changes,
